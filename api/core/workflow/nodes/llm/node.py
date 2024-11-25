@@ -552,8 +552,11 @@ class LLMNode(BaseNode[LLMNodeData]):
             if not isinstance(prompt_message.content, str):
                 prompt_message_content = []
                 for content_item in prompt_message.content or []:
-                    # Skip image if vision is disabled
-                    if not vision_enabled and content_item.type == PromptMessageContentType.IMAGE:
+                    # Skip image, audio and video if vision is disabled
+                    if not vision_enabled and content_item.type in {
+                        PromptMessageContentType.IMAGE,
+                        PromptMessageContentType.VIDEO,
+                    }:
                         continue
 
                     if isinstance(content_item, ImagePromptMessageContent):

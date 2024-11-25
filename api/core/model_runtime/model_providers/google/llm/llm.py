@@ -2,9 +2,12 @@ import base64
 import io
 import json
 import logging
+import tempfile
+import time
 from collections.abc import Generator
 from typing import Optional, Union, cast
 
+import filetype
 import google.ai.generativelanguage as glm
 import google.generativeai as genai
 import requests
@@ -24,6 +27,7 @@ from core.model_runtime.entities.message_entities import (
     SystemPromptMessage,
     ToolPromptMessage,
     UserPromptMessage,
+    VideoPromptMessageContent,
 )
 from core.model_runtime.errors.invoke import (
     InvokeAuthorizationError,
@@ -192,6 +196,8 @@ class GoogleLargeLanguageModel(LargeLanguageModel):
         google_model = genai.GenerativeModel(model_name=model)
 
         history = []
+
+        genai.configure(api_key=credentials["google_api_key"])
 
         # hack for gemini-pro-vision, which currently does not support multi-turn chat
         if model == "gemini-pro-vision":
@@ -374,6 +380,35 @@ class GoogleLargeLanguageModel(LargeLanguageModel):
                                 raise ValueError(f"Failed to fetch image data from url {message_content.data}, {ex}")
                         blob = {"inline_data": {"mime_type": mime_type, "data": base64_data}}
                         glm_content["parts"].append(blob)
+                    elif c.type == PromptMessageContentType.VIDEO:
+                        message_content = cast(VideoPromptMessageContent, c)
+
+                        if message_content.data.startswith("data:"):
+                            with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+                                data_parts = message_content.data.split(",")
+                                mime_info = data_parts[0].split(";")[0]
+                                mime_type = mime_info.split(":")[1]
+                                encoded_string = data_parts[1]
+                                tmp_file.write(base64.b64decode(encoded_string))
+                                tmp_file_path = tmp_file.name
+                                tmp_file_mime_type = mime_type
+                        else:
+                            # fetch video data from url
+                            try:
+                                video_content = requests.get(message_content.data).content
+                                with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+                                    tmp_file.write(video_content)
+                                    tmp_file_path = tmp_file.name
+                                    tmp_file_mime_type = filetype.guess_mime(tmp_file_path)
+                            except Exception as ex:
+                                raise ValueError(f"Failed to fetch video data from url {message_content.data}, {ex}")
+
+                        uploaded_file = genai.upload_file(tmp_file_path, mime_type=tmp_file_mime_type)
+                        while uploaded_file.state.name == "PROCESSING":  # wait for file to be processed
+                            time.sleep(5)
+                            uploaded_file = genai.get_file(uploaded_file.name)
+
+                        glm_content["parts"].append(uploaded_file)
 
             return glm_content
         elif isinstance(message, AssistantPromptMessage):
